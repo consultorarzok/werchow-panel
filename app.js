@@ -19,13 +19,40 @@ function hexToRgba(hex, a) {
   const r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16);
   return `rgba(${r},${g},${b},${a})`;
 }
-const THEME = { surface: cssVar('--surface'), muted: cssVar('--muted'), border: cssVar('--border') };
-const GRID_COLOR = hexToRgba(THEME.border, .7);
+
+/* ====== TEMA CLARO/OSCURO (botón manual, persiste en localStorage) ====== */
+const THEME_KEY = 'werchow_theme';
+function systemPrefersDark() { return window.matchMedia('(prefers-color-scheme: dark)').matches; }
+function activeTheme() { return localStorage.getItem(THEME_KEY) || (systemPrefersDark() ? 'dark' : 'light'); }
+function applyTheme(theme, persist) {
+  document.documentElement.setAttribute('data-theme', theme);
+  if (persist) localStorage.setItem(THEME_KEY, theme);
+  document.querySelectorAll('#theme-seg button').forEach(b => b.classList.toggle('active', b.dataset.theme === theme));
+  refreshChartTheme();
+}
+document.documentElement.setAttribute('data-theme', activeTheme());
+document.querySelectorAll('#theme-seg button').forEach(b => b.classList.toggle('active', b.dataset.theme === activeTheme()));
+document.getElementById('theme-seg').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-theme]');
+  if (btn) applyTheme(btn.dataset.theme, true);
+});
+
+let THEME = { surface: cssVar('--surface'), muted: cssVar('--muted'), border: cssVar('--border') };
+let GRID_COLOR = hexToRgba(THEME.border, .7);
 
 if (window.Chart) {
   Chart.defaults.font.family = "'IBM Plex Sans', system-ui, sans-serif";
   Chart.defaults.color = THEME.muted;
   Chart.defaults.animation = REDUCE_MOTION ? false : { duration: 800, easing: 'easeOutQuart' };
+}
+
+function refreshChartTheme() {
+  THEME = { surface: cssVar('--surface'), muted: cssVar('--muted'), border: cssVar('--border') };
+  GRID_COLOR = hexToRgba(THEME.border, .7);
+  if (window.Chart) Chart.defaults.color = THEME.muted;
+  if (state.resumen.length || state.leads.length) {
+    renderTrendChart(); renderPeriodChart(); renderDistribution(); renderDonuts();
+  }
 }
 
 /* ====== GATE ====== */

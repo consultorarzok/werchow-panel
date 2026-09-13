@@ -36,7 +36,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0b1715;
     --surface: #122622;
     --surface-2: #16302b;
@@ -60,6 +60,31 @@
     --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
     --shadow-2: 0 14px 32px rgba(0, 0, 0, .45);
   }
+}
+/* Elección manual del usuario (botón claro/oscuro) — gana en cualquier dirección */
+:root[data-theme="dark"] {
+  --bg: #0b1715;
+  --surface: #122622;
+  --surface-2: #16302b;
+  --sidebar-bg: #081513;
+  --sidebar-active: #102b28;
+
+  --ink: #e7f3f1;
+  --muted: #93b0ab;
+  --muted-2: #6f8d88;
+  --border: #1e3a35;
+  --border-soft: #172b27;
+
+  --accent: #22d1c8;
+  --accent-ink: #6fe8e1;
+  --accent-soft: #113330;
+  --accent-2: #e08350;
+  --accent-2-soft: #2c1b12;
+  --gold: #eab84a;
+
+  --critical-soft: #391b1c;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-2: 0 14px 32px rgba(0, 0, 0, .45);
 }
 
 * { box-sizing: border-box; }
@@ -138,6 +163,17 @@ nav.nav button svg { width: 17px; height: 17px; flex: none; opacity: .85; }
 nav.nav button:hover { background: rgba(255,255,255,.05); color: #cfe9e5; }
 nav.nav button.active { background: var(--sidebar-active); color: #fff; }
 nav.nav button.active svg { opacity: 1; color: var(--accent); }
+
+.theme-seg { display: flex; background: rgba(255,255,255,.06); border-radius: 999px; padding: 3px; margin-bottom: 14px; }
+.theme-seg button {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px;
+  border: none; background: none; color: var(--sidebar-muted); font-size: .72rem; font-weight: 500;
+  padding: 7px 8px; border-radius: 999px; cursor: pointer; font-family: var(--font-body);
+  transition: background .15s ease, color .15s ease;
+}
+.theme-seg button svg { width: 13px; height: 13px; }
+.theme-seg button.active { background: var(--sidebar-active); color: #fff; }
+.theme-seg button:not(.active):hover { color: #cfe9e5; }
 
 .sidebar-foot { border-top: 1px solid rgba(255,255,255,.08); padding-top: 14px; font-size: .72rem; color: var(--sidebar-muted); }
 .sidebar-foot button {
