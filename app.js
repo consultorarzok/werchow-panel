@@ -8,21 +8,35 @@ const PALETTE = {
   good: '#1E8E5A', critical: '#D6304A',
 };
 const CATEGORICAL = [PALETTE.teal, PALETTE.terracota, PALETTE.indigo, PALETTE.magenta, PALETTE.gold, PALETTE.purple, PALETTE.green, PALETTE.rust];
-
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 
-/* ====== GATE ====== */
-const gate = document.getElementById('gate');
-const app = document.getElementById('app');
-const footer = document.getElementById('footer');
+const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-function unlock() {
-  gate.classList.add('hidden');
-  app.classList.remove('hidden');
-  footer.style.display = 'block';
-  boot();
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function hexToRgba(hex, a) {
+  const h = hex.replace('#', '');
+  const n = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+  const r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+const THEME = { surface: cssVar('--surface'), muted: cssVar('--muted'), border: cssVar('--border') };
+const GRID_COLOR = hexToRgba(THEME.border, .7);
+
+if (window.Chart) {
+  Chart.defaults.font.family = "'IBM Plex Sans', system-ui, sans-serif";
+  Chart.defaults.color = THEME.muted;
+  Chart.defaults.animation = REDUCE_MOTION ? false : { duration: 800, easing: 'easeOutQuart' };
 }
 
+/* ====== GATE ====== */
+const gateEl = document.getElementById('gate');
+const appEl = document.getElementById('app');
+
+function unlock() {
+  gateEl.classList.add('hidden');
+  appEl.classList.add('ready');
+  boot();
+}
 if (sessionStorage.getItem('werchow_unlocked') === '1') {
   unlock();
 } else {
@@ -38,6 +52,24 @@ function tryUnlock() {
     document.getElementById('gate-err').textContent = 'Clave incorrecta';
   }
 }
+
+/* ====== VIEW NAV ====== */
+const VIEW_TITLES = { resumen: 'Resumen', comparar: 'Comparar por período', distribucion: 'Distribución', crm: 'Leads — vista CRM' };
+document.getElementById('nav').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-view]');
+  if (!btn) return;
+  goToView(btn.dataset.view);
+});
+function goToView(name) {
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+  document.getElementById('topbar-title').textContent = VIEW_TITLES[name] || '';
+  requestAnimationFrame(() => Object.values(charts).forEach(c => c && c.resize()));
+}
+document.getElementById('emerg-chip').addEventListener('click', () => {
+  goToView('crm');
+  document.querySelector('#crm-tabs button[data-tab="emerg"]').click();
+});
 
 /* ====== DATA FETCH ====== */
 // Usamos /export?format=csv&gid=... en vez de /gviz/tq: el endpoint gviz
@@ -56,10 +88,8 @@ function csvUrl(sheetName) {
 function fetchSheet(sheetName, opts) {
   return new Promise((resolve, reject) => {
     Papa.parse(csvUrl(sheetName), Object.assign({
-      download: true,
-      skipEmptyLines: true,
-      complete: res => resolve(res.data),
-      error: reject,
+      download: true, skipEmptyLines: true,
+      complete: res => resolve(res.data), error: reject,
     }, opts || {}));
   });
 }
@@ -110,8 +140,11 @@ async function loadResumenMensual() {
 
 /* ====== STATE ====== */
 const state = { leads: [], ases: [], emerg: [], interes: [], resumen: [] };
+const charts = {};
 
 async function boot() {
+  const icon = document.getElementById('refresh-icon');
+  icon.classList.add('spinning');
   try {
     const [leads, ases, emerg, interes, resumen] = await Promise.all([
       fetchSheet('Leads', { header: true }),
@@ -134,30 +167,29 @@ async function boot() {
     document.getElementById('kpi-row').innerHTML =
       '<div class="error-msg" style="grid-column:1/-1">No se pudieron cargar los datos en vivo. ' +
       'Verificá que el Google Sheet esté compartido como "Cualquiera con el enlace puede ver".</div>';
+  } finally {
+    icon.classList.remove('spinning');
   }
 }
 document.getElementById('refresh-btn').addEventListener('click', boot);
 
 function renderAll() {
   populateMonthSelect();
-  renderEmergBanner();
+  renderEmergChip();
   renderKpis();
   renderTrendChart();
   renderPeriodChart();
   renderDistribution();
+  renderDonuts();
   renderCrm();
 }
 
-/* ====== EMERGENCY BANNER ====== */
-function renderEmergBanner() {
+/* ====== EMERGENCY CHIP ====== */
+function renderEmergChip() {
   const pending = state.emerg.filter(r => (r.Estado || '').toLowerCase().includes('pendiente')).length;
-  const banner = document.getElementById('emerg-banner');
-  if (pending > 0) {
-    document.getElementById('emerg-count').textContent = pending;
-    banner.classList.add('show');
-  } else {
-    banner.classList.remove('show');
-  }
+  const chip = document.getElementById('emerg-chip');
+  document.getElementById('emerg-count').textContent = pending;
+  chip.classList.toggle('show', pending > 0);
 }
 
 /* ====== KPIs ====== */
@@ -173,6 +205,19 @@ function populateMonthSelect() {
   sel.selectedIndex = state.resumen.length - 1;
   sel.addEventListener('change', renderKpis);
 }
+
+function animateNumber(el, to) {
+  if (REDUCE_MOTION || to === 0) { el.textContent = to; return; }
+  const start = performance.now(), dur = 700;
+  function step(t) {
+    const p = Math.min(1, (t - start) / dur);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = Math.round(eased * to);
+    if (p < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
 function renderKpis() {
   const sel = document.getElementById('month-select');
   const idx = +sel.value;
@@ -187,7 +232,7 @@ function renderKpis() {
     ['Emergencias', cur.emergencias, prev && prev.emergencias],
     ['Calientes', cur.calientes, prev && prev.calientes],
   ];
-  row.innerHTML = metrics.map(([label, val, prevVal]) => {
+  row.innerHTML = metrics.map(([label, val, prevVal], i) => {
     let delta = '';
     if (prevVal !== undefined && prevVal !== null) {
       const diff = val - prevVal;
@@ -195,13 +240,12 @@ function renderKpis() {
       const arrow = diff > 0 ? '▲' : diff < 0 ? '▼' : '—';
       delta = `<div class="delta ${cls}">${arrow} ${Math.abs(diff)} vs mes anterior</div>`;
     }
-    return `<div class="kpi"><div class="label">${label}</div><div class="value">${val}</div>${delta}</div>`;
+    return `<div class="kpi fade-up" style="animation-delay:${i * 60}ms"><div class="label">${label}</div><div class="value num" data-target="${val}">0</div>${delta}</div>`;
   }).join('');
+  row.querySelectorAll('.value').forEach(el => animateNumber(el, +el.dataset.target));
 }
 
 /* ====== TREND CHART (monthly, from Resumen Mensual) ====== */
-let trendChart, periodChart, tiposChart, tempChart, localidadChart;
-
 function renderTrendChart() {
   const labels = state.resumen.map(r => monthLabel(r.mes));
   const series = [
@@ -212,23 +256,19 @@ function renderTrendChart() {
     { key: 'calientes', label: 'Calientes', color: CATEGORICAL[4] },
   ];
   const datasets = series.map(s => ({
-    label: s.label,
-    data: state.resumen.map(r => r[s.key]),
-    borderColor: s.color,
-    backgroundColor: s.color,
-    pointRadius: 3,
-    borderWidth: 2,
-    tension: .25,
+    label: s.label, data: state.resumen.map(r => r[s.key]),
+    borderColor: s.color, backgroundColor: s.color,
+    pointRadius: 3, pointHoverRadius: 5, borderWidth: 2, tension: .3,
   }));
-  if (trendChart) trendChart.destroy();
-  trendChart = new Chart(document.getElementById('chart-trend'), {
+  if (charts.trend) charts.trend.destroy();
+  charts.trend = new Chart(document.getElementById('chart-trend'), {
     type: 'line',
     data: { labels, datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { position: 'bottom' }, tooltip: { mode: 'index', intersect: false } },
       interaction: { mode: 'index', intersect: false },
-      scales: { y: { beginAtZero: true, grid: { color: '#eef1f0' } }, x: { grid: { display: false } } },
+      scales: { y: { beginAtZero: true, grid: { color: GRID_COLOR } }, x: { grid: { display: false } } },
     },
   });
 
@@ -237,12 +277,13 @@ function renderTrendChart() {
     series.map(s => `<th>${s.label}</th>`).join('') + '</tr></thead><tbody>' +
     state.resumen.map(r => `<tr><td>${monthLabel(r.mes)}</td>` + series.map(s => `<td>${r[s.key]}</td>`).join('') + '</tr>').join('') +
     '</tbody></table>';
-  document.getElementById('toggle-trend-table').addEventListener('click', () => {
+  const toggleBtn = document.getElementById('toggle-trend-table');
+  toggleBtn.onclick = () => {
     const showing = tableWrap.style.display !== 'none';
     tableWrap.style.display = showing ? 'none' : 'block';
-    document.getElementById('toggle-trend-table').textContent = showing ? 'Ver como tabla' : 'Ver como gráfico';
+    toggleBtn.textContent = showing ? 'Ver como tabla' : 'Ver como gráfico';
     document.getElementById('chart-trend').style.display = showing ? 'block' : 'none';
-  });
+  };
 }
 
 /* ====== PERIOD CHART (month/week toggle, from raw lead sheets) ====== */
@@ -255,7 +296,6 @@ document.querySelectorAll('#period-seg button').forEach(btn => {
     renderPeriodChart();
   });
 });
-
 function aggregate(records, dateField, keyFn) {
   const map = new Map();
   records.forEach(r => {
@@ -266,11 +306,9 @@ function aggregate(records, dateField, keyFn) {
   });
   return map;
 }
-
 function renderPeriodChart() {
   const keyFn = currentPeriod === 'month' ? monthKey : weekKey;
   const labelFn = currentPeriod === 'month' ? monthLabel : weekLabel;
-
   const series = [
     { name: 'Leads nuevos', records: state.leads, field: 'Fecha_Registro', color: CATEGORICAL[0] },
     { name: 'Interesados en adhesión', records: state.ases, field: 'Fecha', color: CATEGORICAL[1] },
@@ -284,25 +322,23 @@ function renderPeriodChart() {
   const keys = currentPeriod === 'week' ? sortedKeys.slice(-16) : sortedKeys;
 
   const datasets = series.map(s => ({
-    label: s.name,
-    data: keys.map(k => s.map.get(k) || 0),
-    backgroundColor: s.color,
-    borderRadius: 4,
+    label: s.name, data: keys.map(k => s.map.get(k) || 0),
+    backgroundColor: s.color, borderRadius: 5, borderSkipped: false,
   }));
-
-  if (periodChart) periodChart.destroy();
-  periodChart = new Chart(document.getElementById('chart-period'), {
+  if (charts.period) charts.period.destroy();
+  charts.period = new Chart(document.getElementById('chart-period'), {
     type: 'bar',
     data: { labels: keys.map(labelFn), datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { position: 'bottom' } },
-      scales: { y: { beginAtZero: true, grid: { color: '#eef1f0' } }, x: { grid: { display: false }, stacked: false } },
+      animation: REDUCE_MOTION ? false : { duration: 700, easing: 'easeOutQuart', delay: ctx => ctx.type === 'data' ? ctx.dataIndex * 18 + ctx.datasetIndex * 90 : 0 },
+      scales: { y: { beginAtZero: true, grid: { color: GRID_COLOR } }, x: { grid: { display: false } } },
     },
   });
 }
 
-/* ====== DISTRIBUTION CHARTS ====== */
+/* ====== DISTRIBUTION CHARTS (bars) ====== */
 function topN(map, n) {
   const entries = [...map.entries()].sort((a, b) => b[1] - a[1]);
   const top = entries.slice(0, n);
@@ -310,9 +346,10 @@ function topN(map, n) {
   if (restTotal > 0) top.push(['Otros', restTotal]);
   return top;
 }
-
+function barDelay(ctx) {
+  return REDUCE_MOTION ? 0 : ctx.dataIndex * 45;
+}
 function renderDistribution() {
-  // Tipo_Consulta: split multi-value comma field, single-hue ranking bar
   const tipoMap = new Map();
   state.leads.forEach(r => {
     (r.Tipo_Consulta || '').split(',').map(s => s.trim()).filter(Boolean).forEach(tag => {
@@ -320,42 +357,35 @@ function renderDistribution() {
     });
   });
   const tipoTop = topN(tipoMap, 8).sort((a, b) => a[1] - b[1]);
-  if (tiposChart) tiposChart.destroy();
-  tiposChart = new Chart(document.getElementById('chart-tipos'), {
+  if (charts.tipos) charts.tipos.destroy();
+  charts.tipos = new Chart(document.getElementById('chart-tipos'), {
     type: 'bar',
-    data: { labels: tipoTop.map(e => e[0]), datasets: [{ data: tipoTop.map(e => e[1]), backgroundColor: PALETTE.teal, borderRadius: 4 }] },
+    data: { labels: tipoTop.map(e => e[0]), datasets: [{ data: tipoTop.map(e => e[1]), backgroundColor: PALETTE.teal, borderRadius: 5, borderSkipped: false }] },
     options: {
       indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: { enabled: true } },
-      scales: { x: { beginAtZero: true, grid: { color: '#eef1f0' } }, y: { grid: { display: false } } },
+      animation: { delay: barDelay },
+      plugins: { legend: { display: false } },
+      scales: { x: { beginAtZero: true, grid: { color: GRID_COLOR } }, y: { grid: { display: false } } },
     },
   });
 
-  // Temperatura: ordinal ramp frio->tibio->caliente + convertido as success accent
   const tempOrder = ['frio', 'tibio', 'caliente', 'convertido'];
   const tempColors = { frio: '#f3c9a8', tibio: '#dd8a4d', caliente: '#a84f24', convertido: PALETTE.teal };
-  const tempCounts = {};
-  tempOrder.forEach(t => tempCounts[t] = 0);
-  state.leads.forEach(r => {
-    const t = (r.Temperatura || '').trim().toLowerCase();
-    if (tempCounts[t] !== undefined) tempCounts[t]++;
-  });
-  if (tempChart) tempChart.destroy();
-  tempChart = new Chart(document.getElementById('chart-temp'), {
+  const tempCounts = {}; tempOrder.forEach(t => tempCounts[t] = 0);
+  state.leads.forEach(r => { const t = (r.Temperatura || '').trim().toLowerCase(); if (tempCounts[t] !== undefined) tempCounts[t]++; });
+  if (charts.temp) charts.temp.destroy();
+  charts.temp = new Chart(document.getElementById('chart-temp'), {
     type: 'bar',
-    data: {
-      labels: tempOrder.map(t => t[0].toUpperCase() + t.slice(1)),
-      datasets: [{ data: tempOrder.map(t => tempCounts[t]), backgroundColor: tempOrder.map(t => tempColors[t]), borderRadius: 4 }],
-    },
+    data: { labels: tempOrder.map(t => t[0].toUpperCase() + t.slice(1)), datasets: [{ data: tempOrder.map(t => tempCounts[t]), backgroundColor: tempOrder.map(t => tempColors[t]), borderRadius: 5, borderSkipped: false }] },
     options: {
       indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      animation: { delay: barDelay },
       plugins: { legend: { display: false } },
-      scales: { x: { beginAtZero: true, grid: { color: '#eef1f0' } }, y: { grid: { display: false } } },
+      scales: { x: { beginAtZero: true, grid: { color: GRID_COLOR } }, y: { grid: { display: false } } },
     },
   });
 
-  // Localidad: single-hue ranking bar (agrupado sin distinguir mayúsculas/minúsculas)
-  const locGroups = new Map(); // key lowercase -> { label: mostFrequentOriginal, counts: Map(original->n), total }
+  const locGroups = new Map();
   state.leads.forEach(r => {
     const loc = (r.Localidad || '').trim();
     if (!loc) return;
@@ -366,53 +396,67 @@ function renderDistribution() {
     g.total++;
   });
   const locMap = new Map();
-  locGroups.forEach(g => {
-    const label = [...g.counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
-    locMap.set(label, g.total);
-  });
+  locGroups.forEach(g => { const label = [...g.counts.entries()].sort((a, b) => b[1] - a[1])[0][0]; locMap.set(label, g.total); });
   const locTop = topN(locMap, 8).sort((a, b) => a[1] - b[1]);
-  if (localidadChart) localidadChart.destroy();
-  localidadChart = new Chart(document.getElementById('chart-localidad'), {
+  if (charts.localidad) charts.localidad.destroy();
+  charts.localidad = new Chart(document.getElementById('chart-localidad'), {
     type: 'bar',
-    data: { labels: locTop.map(e => e[0]), datasets: [{ data: locTop.map(e => e[1]), backgroundColor: PALETTE.terracota, borderRadius: 4 }] },
+    data: { labels: locTop.map(e => e[0]), datasets: [{ data: locTop.map(e => e[1]), backgroundColor: PALETTE.terracota, borderRadius: 5, borderSkipped: false }] },
     options: {
       indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      animation: { delay: barDelay },
       plugins: { legend: { display: false } },
-      scales: { x: { beginAtZero: true, grid: { color: '#eef1f0' } }, y: { grid: { display: false } } },
+      scales: { x: { beginAtZero: true, grid: { color: GRID_COLOR } }, y: { grid: { display: false } } },
     },
   });
 }
 
+/* ====== DONUT CHARTS ====== */
+function renderDonut(canvasId, centerElId, legendElId, labels, data, colors) {
+  const total = data.reduce((a, b) => a + b, 0);
+  if (charts[canvasId]) charts[canvasId].destroy();
+  charts[canvasId] = new Chart(document.getElementById(canvasId), {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: colors, borderColor: THEME.surface, borderWidth: 2, hoverOffset: 6 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: '68%',
+      animation: REDUCE_MOTION ? false : { animateRotate: true, animateScale: true, duration: 900, easing: 'easeOutQuart' },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${c.label}: ${c.parsed} (${total ? Math.round(c.parsed / total * 100) : 0}%)` } } },
+    },
+  });
+  document.getElementById(centerElId).innerHTML = `<span class="n">${total}</span><span class="l">total</span>`;
+  document.getElementById(legendElId).innerHTML = labels.map((l, i) =>
+    `<div class="item"><span class="sw" style="background:${colors[i]}"></span>${l} · ${data[i]}</div>`
+  ).join('');
+}
+function renderDonuts() {
+  const catMap = new Map();
+  state.ases.forEach(r => { const c = (r.Categoria || 'Sin categoría').trim(); catMap.set(c, (catMap.get(c) || 0) + 1); });
+  const catEntries = [...catMap.entries()].sort((a, b) => b[1] - a[1]);
+  renderDonut('chart-categoria', 'donut-categoria-center', 'donut-categoria-legend',
+    catEntries.map(e => e[0]), catEntries.map(e => e[1]), CATEGORICAL);
+
+  const estMap = new Map();
+  state.interes.forEach(r => { const e = (r.Estado || 'Sin estado').trim(); estMap.set(e, (estMap.get(e) || 0) + 1); });
+  const estEntries = [...estMap.entries()].sort((a, b) => b[1] - a[1]);
+  renderDonut('chart-interes', 'donut-interes-center', 'donut-interes-legend',
+    estEntries.map(e => e[0]), estEntries.map(e => e[1]), [PALETTE.indigo, PALETTE.good, PALETTE.gold, PALETTE.magenta]);
+}
+
 /* ====== CRM TABLE ====== */
 const TABS = {
-  leads: {
-    label: 'Todos los leads',
-    data: () => state.leads,
-    estadoField: 'Temperatura',
+  leads: { data: () => state.leads, estadoField: 'Temperatura',
     columns: ['Fecha_Registro', 'Nombre', 'Telefono', 'Localidad', 'Tipo_Consulta', 'Temperatura', 'Ultima_Interaccion'],
-    headers: ['Fecha', 'Nombre', 'Teléfono', 'Localidad', 'Motivo', 'Temperatura', 'Última interacción'],
-  },
-  ases: {
-    label: 'Interesados en adhesión',
-    data: () => state.ases,
-    estadoField: 'Categoria',
+    headers: ['Fecha', 'Nombre', 'Teléfono', 'Localidad', 'Motivo', 'Temperatura', 'Última interacción'] },
+  ases: { data: () => state.ases, estadoField: 'Categoria',
     columns: ['Fecha', 'Nombre', 'Telefono', 'Localidad', 'Categoria', 'Horario_Llamada', 'Estado'],
-    headers: ['Fecha', 'Nombre', 'Teléfono', 'Localidad', 'Categoría', 'Horario', 'Estado'],
-  },
-  emerg: {
-    label: 'Emergencias sepelio',
-    data: () => state.emerg,
-    estadoField: 'Estado',
+    headers: ['Fecha', 'Nombre', 'Teléfono', 'Localidad', 'Categoría', 'Horario', 'Estado'] },
+  emerg: { data: () => state.emerg, estadoField: 'Estado',
     columns: ['Fecha', 'Nombre', 'Telefono', 'Localidad', 'Estado', 'Atendido_Por', 'Fecha_Cierre'],
-    headers: ['Fecha', 'Nombre', 'Teléfono', 'Localidad', 'Estado', 'Atendido por', 'Cierre'],
-  },
-  interes: {
-    label: 'Interés sepelio',
-    data: () => state.interes,
-    estadoField: 'Estado',
+    headers: ['Fecha', 'Nombre', 'Teléfono', 'Localidad', 'Estado', 'Atendido por', 'Cierre'] },
+  interes: { data: () => state.interes, estadoField: 'Estado',
     columns: ['Fecha', 'Nombre', 'Telefono', 'Localidad', 'Estado', 'En_Ventas'],
-    headers: ['Fecha', 'Nombre', 'Teléfono', 'Localidad', 'Estado', 'En ventas'],
-  },
+    headers: ['Fecha', 'Nombre', 'Teléfono', 'Localidad', 'Estado', 'En ventas'] },
 };
 let activeTab = 'leads';
 let crmPage = 0;
@@ -446,7 +490,6 @@ function renderCrm() {
   const tab = TABS[activeTab];
   let rows = tab.data();
 
-  // populate estado filter options
   const estadoSel = document.getElementById('crm-estado');
   const distinct = [...new Set(rows.map(r => (r[tab.estadoField] || '').trim()).filter(Boolean))].sort();
   const prevVal = estadoSel.value;
@@ -455,15 +498,9 @@ function renderCrm() {
 
   const search = document.getElementById('crm-search').value.trim().toLowerCase();
   const estadoFilter = estadoSel.value;
+  if (search) rows = rows.filter(r => (r.Nombre || '').toLowerCase().includes(search) || (r.Telefono || '').includes(search) || (r.Localidad || '').toLowerCase().includes(search));
+  if (estadoFilter) rows = rows.filter(r => (r[tab.estadoField] || '').trim() === estadoFilter);
 
-  if (search) {
-    rows = rows.filter(r => (r.Nombre || '').toLowerCase().includes(search) || (r.Telefono || '').includes(search) || (r.Localidad || '').toLowerCase().includes(search));
-  }
-  if (estadoFilter) {
-    rows = rows.filter(r => (r[tab.estadoField] || '').trim() === estadoFilter);
-  }
-
-  // sort by date desc when possible
   rows = rows.slice().sort((a, b) => {
     const da = parseFecha(a.Fecha || a.Fecha_Registro) || new Date(0);
     const db = parseFecha(b.Fecha || b.Fecha_Registro) || new Date(0);
@@ -475,9 +512,7 @@ function renderCrm() {
   if (crmPage > maxPage) crmPage = maxPage;
   const pageRows = rows.slice(crmPage * PAGE_SIZE, crmPage * PAGE_SIZE + PAGE_SIZE);
 
-  const thead = document.querySelector('#crm-table thead');
-  thead.innerHTML = '<tr>' + tab.headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
-
+  document.querySelector('#crm-table thead').innerHTML = '<tr>' + tab.headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
   const tbody = document.querySelector('#crm-table tbody');
   if (pageRows.length === 0) {
     tbody.innerHTML = `<tr><td colspan="${tab.headers.length}" class="empty-msg">Sin resultados</td></tr>`;
@@ -487,7 +522,6 @@ function renderCrm() {
       return `<td>${r[c] || ''}</td>`;
     }).join('') + '</tr>').join('');
   }
-
   document.getElementById('crm-count').textContent = `${total} resultado${total === 1 ? '' : 's'} · página ${crmPage + 1} de ${maxPage + 1}`;
   document.getElementById('crm-prev').disabled = crmPage === 0;
   document.getElementById('crm-next').disabled = crmPage >= maxPage;
