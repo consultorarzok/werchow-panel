@@ -40,8 +40,18 @@ function tryUnlock() {
 }
 
 /* ====== DATA FETCH ====== */
+// Usamos /export?format=csv&gid=... en vez de /gviz/tq: el endpoint gviz
+// devuelve filas corruptas (columnas enteras pegoteadas en una sola celda)
+// para las pestañas con filas agrupadas de esta planilla.
+const GIDS = {
+  'Leads': 529628834,
+  'Leads_Asesoramiento': 1657565566,
+  'Leads_Emergencia_Sepelio': 283150958,
+  'Leads_Sepelio_Interes': 1522551385,
+  'Resumen Mensual': 588282422,
+};
 function csvUrl(sheetName) {
-  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GIDS[sheetName]}`;
 }
 function fetchSheet(sheetName, opts) {
   return new Promise((resolve, reject) => {
