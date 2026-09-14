@@ -112,12 +112,31 @@ const GIDS = {
 function csvUrl(sheetName) {
   return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GIDS[sheetName]}`;
 }
-function fetchSheet(sheetName, opts) {
+// fetch() propio (en vez del download:true de PapaParse) para poder ponerle
+// timeout y reintentos — Google a veces responde con un 307 lento o se cae
+// una sola vez en redes de celular; sin esto, cualquier hiccup tira todo el panel.
+async function fetchCsvText(sheetName, { timeoutMs = 12000, retries = 2 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(csvUrl(sheetName), { signal: controller.signal, cache: 'no-store' });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.text();
+    } catch (e) {
+      clearTimeout(timer);
+      lastErr = e;
+      if (attempt < retries) await new Promise(r => setTimeout(r, 700 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+}
+async function fetchSheet(sheetName, opts) {
+  const text = await fetchCsvText(sheetName);
   return new Promise((resolve, reject) => {
-    Papa.parse(csvUrl(sheetName), Object.assign({
-      download: true, skipEmptyLines: true,
-      complete: res => resolve(res.data), error: reject,
-    }, opts || {}));
+    Papa.parse(text, Object.assign({ skipEmptyLines: true, complete: res => resolve(res.data), error: reject }, opts || {}));
   });
 }
 
@@ -147,8 +166,7 @@ function weekLabel(key) {
   return fmtDM(d) + '–' + fmtDM(end);
 }
 
-async function loadResumenMensual() {
-  const rows = await fetchSheet('Resumen Mensual', { header: false });
+function parseResumenRows(rows) {
   const out = [];
   for (let i = 3; i < rows.length; i++) {
     const r = rows[i];
@@ -169,33 +187,54 @@ async function loadResumenMensual() {
 const state = { leads: [], ases: [], emerg: [], interes: [], resumen: [] };
 const charts = {};
 
+const SOURCES = [
+  { key: 'leads', sheet: 'Leads', label: 'Leads', opts: { header: true } },
+  { key: 'ases', sheet: 'Leads_Asesoramiento', label: 'Interesados en adhesión', opts: { header: true } },
+  { key: 'emerg', sheet: 'Leads_Emergencia_Sepelio', label: 'Emergencias sepelio', opts: { header: true } },
+  { key: 'interes', sheet: 'Leads_Sepelio_Interes', label: 'Interés sepelio', opts: { header: true } },
+  { key: 'resumen', sheet: 'Resumen Mensual', label: 'Resumen mensual', opts: { header: false } },
+];
+
 async function boot() {
   const icon = document.getElementById('refresh-icon');
   icon.classList.add('spinning');
-  try {
-    const [leads, ases, emerg, interes, resumen] = await Promise.all([
-      fetchSheet('Leads', { header: true }),
-      fetchSheet('Leads_Asesoramiento', { header: true }),
-      fetchSheet('Leads_Emergencia_Sepelio', { header: true }),
-      fetchSheet('Leads_Sepelio_Interes', { header: true }),
-      loadResumenMensual(),
-    ]);
-    state.leads = leads.filter(r => r.Telefono);
-    state.ases = ases.filter(r => r.Telefono);
-    state.emerg = emerg.filter(r => r.Telefono);
-    state.interes = interes.filter(r => r.Telefono);
-    state.resumen = resumen;
+  document.getElementById('load-warning')?.remove();
 
-    document.getElementById('last-update').textContent = 'Actualizado ' + new Date().toLocaleString('es-AR');
-    renderAll();
-  } catch (e) {
-    console.error(e);
+  const results = await Promise.allSettled(SOURCES.map(s => fetchSheet(s.sheet, s.opts)));
+  const failed = [];
+  results.forEach((r, i) => {
+    const src = SOURCES[i];
+    if (r.status === 'fulfilled') {
+      if (src.key === 'resumen') state.resumen = parseResumenRows(r.value);
+      else state[src.key] = r.value.filter(row => row.Telefono);
+    } else {
+      failed.push(src.label);
+      console.error(src.sheet, r.reason);
+    }
+  });
+  icon.classList.remove('spinning');
+
+  if (failed.length === SOURCES.length) {
     document.getElementById('last-update').textContent = 'Error al cargar datos';
     document.getElementById('kpi-row').innerHTML =
-      '<div class="error-msg" style="grid-column:1/-1">No se pudieron cargar los datos en vivo. ' +
-      'Verificá que el Google Sheet esté compartido como "Cualquiera con el enlace puede ver".</div>';
-  } finally {
-    icon.classList.remove('spinning');
+      '<div class="error-msg" style="grid-column:1/-1">No se pudieron cargar los datos en vivo (revisá tu conexión). ' +
+      '<button class="link-btn" id="retry-btn" style="display:inline">Reintentar</button></div>';
+    document.getElementById('retry-btn').addEventListener('click', boot);
+    return;
+  }
+
+  document.getElementById('last-update').textContent = 'Actualizado ' + new Date().toLocaleString('es-AR');
+  renderAll();
+
+  if (failed.length) {
+    const warn = document.createElement('div');
+    warn.id = 'load-warning';
+    warn.className = 'error-msg';
+    warn.style.cssText = 'grid-column:1/-1;padding:10px;font-size:.8rem;text-align:left';
+    warn.innerHTML = `No se pudo actualizar: ${failed.join(', ')}. Se muestran los últimos datos disponibles de eso. ` +
+      '<button class="link-btn" id="retry-btn" style="display:inline">Reintentar</button>';
+    document.getElementById('kpi-row').before(warn);
+    document.getElementById('retry-btn').addEventListener('click', boot);
   }
 }
 document.getElementById('refresh-btn').addEventListener('click', boot);
